@@ -18,7 +18,11 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.LockedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.client.HttpClientErrorException;
 
@@ -27,7 +31,10 @@ import javax.crypto.SecretKey;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayOutputStream;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 import java.nio.charset.StandardCharsets;
 import io.jsonwebtoken.Jwts;
@@ -191,33 +198,88 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
+    /** Wrong codes allowed before the account is locked. */
+    static final int MAX_FAILED_TOTP_ATTEMPTS = 5;
+    /** How long verification stays locked after too many wrong codes. */
+    static final Duration TOTP_LOCK_DURATION = Duration.ofMinutes(15);
+
     /**
-     * Verifies the provided 6-digit TOTP code against the user's secret key.
-     * This implementation checks the current time window as well as the immediately
-     * preceding and succeeding windows to tolerate slight clock skew on the user's device.
-     * If the user is in a 'temporary' state and verification fails, their account is deleted to prevent stale registrations.
-     * If successful, the user's state is upgraded to 'permanent'.
-     * 
+     * Verifies a 6-digit TOTP code against the user's secret key.
+     *
+     * The code is accepted for the previous, current and next 30-second step to tolerate clock
+     * skew. A code is accepted at most once: a step at or before the last accepted one is refused.
+     * After {@value #MAX_FAILED_TOTP_ATTEMPTS} wrong codes the account is locked for
+     * {@link #TOTP_LOCK_DURATION}, so the 6-digit space cannot be searched online.
+     * A temporary (unconfirmed) registration that fails is deleted, as before.
+     *
+     * The failure counter is committed even though the method then throws, because the
+     * transaction does not roll back on authentication failures.
+     *
      * @param secretKey The user's Base32-encoded secret key.
      * @param totp      The 6-digit code submitted by the user.
-     * @param user      The user entity attempting verification.
-     * @return true if the TOTP code is valid for the current time window, false otherwise.
+     * @param user      The user attempting verification. Its state is updated on success.
+     * @return true when the code is accepted.
+     * @throws LockedException         While the account is locked.
+     * @throws BadCredentialsException For a wrong or reused code.
      */
     @Override
+    @Transactional(noRollbackFor = AuthenticationException.class)
     public boolean verifyTotp(String secretKey, String totp, User user) {
-        try {
-            // Google Authenticator compatible TOTP with clock skew tolerance
-            Base32 base32 = new Base32();
-            byte[] keyBytes = base32.decode(secretKey);
-            SecretKeySpec signKey = new SecretKeySpec(keyBytes, "HmacSHA1");
-            Mac mac = Mac.getInstance("HmacSHA1");
-            mac.init(signKey);
+        User current = authRepository.findByIdForUpdate(user.getUserId())
+                .orElseThrow(() -> new BadCredentialsException("User not found"));
+        Instant now = Instant.now();
+        if (current.getTotpLockedUntil() != null && now.isBefore(current.getTotpLockedUntil())) {
+            throw new LockedException("Too many failed TOTP attempts");
+        }
 
-            boolean valid = false;
-            long currentIndex = System.currentTimeMillis() / 1000 / 30;
-            for (long timeIndex = currentIndex - 1; timeIndex <= currentIndex + 1 && !valid; timeIndex++) {
+        long matchedStep = matchingTimeStep(secretKey, totp, now.getEpochSecond() / 30);
+        boolean reused = matchedStep >= 0 && current.getLastTotpTimeStep() != null
+                && matchedStep <= current.getLastTotpTimeStep();
+        if (matchedStep < 0 || reused) {
+            if ("temporary".equals(current.getState())) {
+                authRepository.deleteById(current.getUserId());
+            } else {
+                recordFailedAttempt(current, now);
+            }
+            throw new BadCredentialsException(reused ? "TOTP code already used" : "Invalid TOTP code");
+        }
+
+        current.setFailedTotpAttempts(0);
+        current.setTotpLockedUntil(null);
+        current.setLastTotpTimeStep(matchedStep);
+        current.setState("permanent");
+        authRepository.save(current);
+        user.setState("permanent");
+        return true;
+    }
+
+    private void recordFailedAttempt(User user, Instant now) {
+        int failures = (user.getFailedTotpAttempts() == null ? 0 : user.getFailedTotpAttempts()) + 1;
+        if (failures >= MAX_FAILED_TOTP_ATTEMPTS) {
+            user.setTotpLockedUntil(now.plus(TOTP_LOCK_DURATION));
+            failures = 0;
+        }
+        user.setFailedTotpAttempts(failures);
+        authRepository.save(user);
+    }
+
+    /**
+     * Returns the 30-second step whose code equals {@code totp}, checking one step either side of
+     * {@code currentStep}, or -1 when none matches.
+     */
+    private static long matchingTimeStep(String secretKey, String totp, long currentStep) {
+        if (totp == null) {
+            return -1;
+        }
+        try {
+            // Google Authenticator compatible TOTP (RFC 6238, HMAC-SHA1, 6 digits)
+            byte[] keyBytes = new Base32().decode(secretKey);
+            Mac mac = Mac.getInstance("HmacSHA1");
+            mac.init(new SecretKeySpec(keyBytes, "HmacSHA1"));
+            byte[] submitted = totp.getBytes(StandardCharsets.US_ASCII);
+            for (long step = currentStep - 1; step <= currentStep + 1; step++) {
                 byte[] data = new byte[8];
-                long value = timeIndex;
+                long value = step;
                 for (int i = 7; value > 0; i--) {
                     data[i] = (byte) (value & 0xFF);
                     value >>= 8;
@@ -228,25 +290,12 @@ public class AuthServiceImpl implements AuthService {
                         ((hash[offset + 1] & 0xFF) << 16) |
                         ((hash[offset + 2] & 0xFF) << 8) |
                         (hash[offset + 3] & 0xFF);
-                int otp = binary % 1000000;
-                String generatedTotp = String.format("%06d", otp);
-                valid = generatedTotp.equals(totp);
-            }
-
-            if (!valid) {
-                if ("temporary".equals(user.getState())) {
-                    authRepository.deleteById(user.getUserId());
+                byte[] expected = String.format("%06d", binary % 1000000).getBytes(StandardCharsets.US_ASCII);
+                if (MessageDigest.isEqual(expected, submitted)) {
+                    return step;
                 }
-                throw new RuntimeException("Invalid TOTP code");
             }
-
-            if (valid) {
-                user.setState("permanent");
-                authRepository.save(user);
-                // rest template call
-            }
-            return valid;
-
+            return -1;
         } catch (Exception e) {
             throw new RuntimeException("Failed to verify TOTP", e);
         }

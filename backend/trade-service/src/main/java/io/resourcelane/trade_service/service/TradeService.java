@@ -25,6 +25,9 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
@@ -180,6 +183,40 @@ public class TradeService {
         String orderJson = objectMapper.writeValueAsString(orderProducerDTO);
         orderOutboxRepository.save(new OrderOutboxEvent(orderEntity.getOrderId(), orderJson));
         logger.info("Order {} queued for matching engine for user {}", orderEntity.getOrderId(), userId);
+    }
+
+    /**
+     * Queues a cancel request for one of the user's resting limit orders.
+     *
+     * The order stays listed until the matcher answers, because a fill may still arrive first.
+     * The cancel is written to the order's outbox row, so it is published only after the order.
+     *
+     * @param orderId The order to cancel.
+     * @param userId  The user making the request.
+     * @throws NoSuchElementException   If the user has no such open order.
+     * @throws IllegalArgumentException If the order cannot be cancelled.
+     */
+    @Transactional
+    public void requestCancel(Long orderId, Long userId) throws Exception {
+        if (orderId == null) {
+            throw new IllegalArgumentException("Missing order ID");
+        }
+        Order order = orderRepository.findById(orderId).orElse(null);
+        if (order == null || !userId.equals(order.getUserId())) {
+            throw new NoSuchElementException("Order not found");
+        }
+        if (!TYPE_LIMIT.equals(order.getType())) {
+            throw new IllegalArgumentException("Only resting limit orders can be cancelled");
+        }
+        OrderOutboxEvent event = orderOutboxRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalStateException("Outbox event missing for order " + orderId));
+        if (event.isCancelRequested()) {
+            throw new IllegalArgumentException("Cancel already requested");
+        }
+        event.requestCancel(objectMapper.writeValueAsString(Map.of(
+                "action", "CANCEL", "orderId", orderId.toString(), "userId", userId.toString())));
+        orderOutboxRepository.save(event);
+        logger.info("Cancel for order {} queued for matching engine", orderId);
     }
 
     private static boolean wouldMatchOwnOrder(OrderRequest incoming, Order existing) {
@@ -412,6 +449,10 @@ public class TradeService {
     @Transactional
     public void updateOrder(StatusConsumerDTO statusConsumerDTO) {
         try {
+            if (Boolean.TRUE.equals(statusConsumerDTO.getCancelled())) {
+                applyCancellation(statusConsumerDTO);
+                return;
+            }
             // Fetch the order by orderId
             Long orderId = Long.parseLong(statusConsumerDTO.getOrderId());
             if (Boolean.TRUE.equals(statusConsumerDTO.getCompleted())) {
@@ -506,6 +547,40 @@ public class TradeService {
     }
 
     /**
+     * Applies the matcher's answer to a cancel request.
+     *
+     * The matcher reports how much it removed from the book. Everything else was matched, so the
+     * reservation keeps holding only matched quantity that is not settled yet. A redelivered
+     * answer computes the same value and changes nothing.
+     */
+    private void applyCancellation(StatusConsumerDTO status) {
+        Long orderId = Long.parseLong(status.getOrderId());
+        Long userId = Long.parseLong(status.getUserId());
+        // Same serialization point as order submission and settlement for this user.
+        jdbcTemplate.queryForMap("select balance, units from wallets where user_id = ? for update", userId);
+        OrderReservation reservation = reservationRepository.findById(orderId)
+                .orElseThrow(() -> new IllegalArgumentException("Reservation not found"));
+        if (!reservation.getUserId().equals(userId) || !TYPE_LIMIT.equals(reservation.getType())) {
+            throw new IllegalArgumentException("Invalid cancellation owner or type");
+        }
+        Integer cancelled = status.getCancelledQuantity();
+        if (cancelled == null || cancelled < 0 || cancelled > reservation.getQuantity()) {
+            throw new IllegalArgumentException("Invalid cancelled quantity");
+        }
+        int matched = reservation.getQuantity() - cancelled;
+        if (matched < reservation.getSettledQuantity()
+                || reservation.getMatchedQuantity() != null && reservation.getMatchedQuantity() != matched) {
+            throw new IllegalArgumentException("Invalid cancellation");
+        }
+        reservation.setMatchedQuantity(matched);
+        reservationRepository.save(reservation);
+        orderRepository.findById(orderId).ifPresent(orderRepository::delete);
+        sendToast(userId, cancelled > 0
+                ? "Limit order cancelled: " + cancelled + " units released."
+                : "Nothing left to cancel; the order had already filled.");
+    }
+
+    /**
      * Retrieves active orders for a user.
      *
      * @param userId The user ID.
@@ -521,11 +596,17 @@ public class TradeService {
             return null;
         }
 
+        Set<Long> cancelling = orderOutboxRepository
+                .findAllById(orders.stream().map(Order::getOrderId).toList()).stream()
+                .filter(OrderOutboxEvent::isCancelRequested)
+                .map(OrderOutboxEvent::getOrderId)
+                .collect(Collectors.toSet());
         List<OrderDTO> orderDTOs = orders.stream()
                 .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
                 .map(order -> {
                     OrderDTO orderDTO = new OrderDTO();
                     BeanUtils.copyProperties(order, orderDTO);
+                    orderDTO.setCancelRequested(cancelling.contains(order.getOrderId()));
                     return orderDTO;
                 })
                 .toList();

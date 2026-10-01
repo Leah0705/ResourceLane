@@ -8,8 +8,8 @@ import jakarta.persistence.GenerationType;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.ToString;
-import lombok.AllArgsConstructor;
 import lombok.NoArgsConstructor;
+import java.time.Instant;
 
 /**
  * Entity representing a user in the authentication system.
@@ -17,7 +17,6 @@ import lombok.NoArgsConstructor;
  */
 @Entity
 @Getter @Setter @ToString
-@AllArgsConstructor
 @NoArgsConstructor
 @Table(name = "users")
 public class User {
@@ -49,4 +48,21 @@ public class User {
      * Temporary state might imply registration is incomplete or awaiting further verification.
      */
     private String state;
+
+    /** Wrong codes since the last success or lockout. */
+    private Integer failedTotpAttempts;
+
+    /** Verification is refused until this time after too many wrong codes. */
+    private Instant totpLockedUntil;
+
+    /** 30-second time step of the last accepted code; a code from this step or earlier is refused. */
+    private Long lastTotpTimeStep;
+
+    public User(Long userId, String userName, String phoneNumber, String secretKey, String state) {
+        this.userId = userId;
+        this.userName = userName;
+        this.phoneNumber = phoneNumber;
+        this.secretKey = secretKey;
+        this.state = state;
+    }
 }

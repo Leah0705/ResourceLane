@@ -11,6 +11,11 @@
 
 namespace kafka
 {
+    namespace
+    {
+        const std::string kBookKey{"resource"};
+    }
+
 
     /**
      * @brief Default constructor for KafkaOrderBookProducer.
@@ -66,7 +71,8 @@ namespace kafka
             {"asks", asks}};
         std::string payload = j.dump();
         deliverySuccessful_ = false;
-        producer_.produce(cppkafka::MessageBuilder("orderbook").payload(payload));
+        // One book, one key: consumers see these events in the order the matcher produced them.
+        producer_.produce(cppkafka::MessageBuilder("orderbook").key(kBookKey).payload(payload));
         if (std::getenv("MATCHER_STATE_FILE")) {
             producer_.flush(std::chrono::seconds(10));
             if (!deliverySuccessful_) throw std::runtime_error("Order book delivery not confirmed");

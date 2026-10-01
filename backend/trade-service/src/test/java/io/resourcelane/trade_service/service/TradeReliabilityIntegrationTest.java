@@ -12,6 +12,7 @@ import io.resourcelane.trade_service.repository.ProcessedExecutionRepository;
 import io.resourcelane.trade_service.repository.TradeRepository;
 import java.util.Map;
 import java.util.List;
+import java.util.NoSuchElementException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -144,6 +145,93 @@ class TradeReliabilityIntegrationTest {
 
         assertThat(orders.findById(orderId).orElseThrow().getQuantity()).isEqualTo(3);
         assertThat(reservations.findById(orderId).orElseThrow().heldQuantity()).isEqualTo(5);
+    }
+
+    @Test
+    void cancelIsPublishedOnlyAfterItsOrder() throws Exception {
+        tradeService.sendOrderToMatcher(new OrderRequest(2, 10.25, "BUY", "LIMIT"), 7L);
+        Long orderId = orders.findAll().get(0).getOrderId();
+        tradeService.requestCancel(orderId, 7L);
+
+        List<OrderOutboxEvent> beforeOrderIsPublished = transactionTemplate.execute(
+                status -> outbox.findPendingCancels(PageRequest.of(0, 1)));
+        assertThat(beforeOrderIsPublished).isEmpty();
+
+        transactionTemplate.executeWithoutResult(status -> {
+            OrderOutboxEvent event = outbox.findById(orderId).orElseThrow();
+            event.markPublished();
+            outbox.save(event);
+        });
+        List<OrderOutboxEvent> cancels = transactionTemplate.execute(
+                status -> outbox.findPendingCancels(PageRequest.of(0, 1)));
+        assertThat(cancels).singleElement().satisfies(event ->
+                assertThat(event.getCancelPayload()).contains("\"action\":\"CANCEL\"")
+                        .contains("\"orderId\":\"" + orderId + "\""));
+        assertThat(tradeService.getOrders(7L)).singleElement()
+                .satisfies(order -> assertThat(order.isCancelRequested()).isTrue());
+    }
+
+    @Test
+    void cancellationReleasesOnlyTheUnfilledReservation() throws Exception {
+        tradeService.sendOrderToMatcher(new OrderRequest(5, 10.25, "BUY", "LIMIT"), 7L);
+        Long orderId = orders.findAll().get(0).getOrderId();
+        StatusConsumerDTO partial = new StatusConsumerDTO(orderId.toString(), "7", "BUY", 2);
+        partial.setRemainingQuantity(3);
+        tradeService.updateOrder(partial);
+
+        // 51.25 is still held, so this order does not fit in the 100.00 balance yet.
+        assertThatThrownBy(() -> tradeService.sendOrderToMatcher(new OrderRequest(7, 10.25, "BUY", "LIMIT"), 7L))
+                .hasMessageContaining("Insufficient available balance");
+
+        tradeService.requestCancel(orderId, 7L);
+        StatusConsumerDTO cancelled = new StatusConsumerDTO(orderId.toString(), "7", "BUY", 0);
+        cancelled.setRemainingQuantity(0);
+        cancelled.setCompleted(true);
+        cancelled.setCancelled(true);
+        cancelled.setCancelledQuantity(3);
+        tradeService.updateOrder(cancelled);
+        tradeService.updateOrder(cancelled);
+
+        assertThat(orders.findById(orderId)).isEmpty();
+        // The two filled units stay held until their trade settles.
+        assertThat(reservations.findById(orderId).orElseThrow().heldQuantity()).isEqualTo(2);
+        tradeService.sendOrderToMatcher(new OrderRequest(7, 10.25, "BUY", "LIMIT"), 7L);
+        assertThat(orders.count()).isEqualTo(1);
+    }
+
+    @Test
+    void cancelOfAnAlreadyFilledOrderReleasesNothing() throws Exception {
+        tradeService.sendOrderToMatcher(new OrderRequest(2, 10.25, "BUY", "LIMIT"), 7L);
+        Long orderId = orders.findAll().get(0).getOrderId();
+        tradeService.requestCancel(orderId, 7L);
+        StatusConsumerDTO nothingLeft = new StatusConsumerDTO(orderId.toString(), "7", "", 0);
+        nothingLeft.setCancelled(true);
+        nothingLeft.setCancelledQuantity(0);
+        tradeService.updateOrder(nothingLeft);
+
+        assertThat(reservations.findById(orderId).orElseThrow().heldQuantity()).isEqualTo(2);
+    }
+
+    @Test
+    void invalidCancelRequestsAreRejected() throws Exception {
+        tradeService.sendOrderToMatcher(new OrderRequest(2, 10.25, "BUY", "LIMIT"), 7L);
+        Long limitId = orders.findAll().get(0).getOrderId();
+        tradeService.requestCancel(limitId, 7L);
+
+        assertThatThrownBy(() -> tradeService.requestCancel(limitId, 7L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already requested");
+        assertThatThrownBy(() -> tradeService.requestCancel(limitId, 8L))
+                .isInstanceOf(NoSuchElementException.class);
+        assertThatThrownBy(() -> tradeService.requestCancel(999_999L, 7L))
+                .isInstanceOf(NoSuchElementException.class);
+
+        tradeService.sendOrderToMatcher(new OrderRequest(1, 10.25, "BUY", "MARKET"), 7L);
+        Long marketId = orders.findAll().stream().map(o -> o.getOrderId())
+                .filter(id -> !id.equals(limitId)).findFirst().orElseThrow();
+        assertThatThrownBy(() -> tradeService.requestCancel(marketId, 7L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("limit orders");
     }
 
     @Test

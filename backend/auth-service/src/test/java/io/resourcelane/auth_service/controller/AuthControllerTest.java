@@ -22,6 +22,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -123,6 +124,20 @@ class AuthControllerTest {
                                 new VerifyTotpRequest("1234567890", "000000", "device-fp"))))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error").value("Invalid credentials"));
+    }
+
+    @Test
+    void verify_lockedAccount_returnsTooManyRequests() throws Exception {
+        when(authenticationManager.authenticate(any(OtpAuthenticationToken.class)))
+                .thenThrow(new LockedException("Too many failed TOTP attempts"));
+
+        mockMvc.perform(post("/api/auth/verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new VerifyTotpRequest("1234567890", "000000", "device-fp"))))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.error").value("Too many failed attempts. Try again later."));
+        verify(authService, never()).generateJwt(anyLong(), anyString());
     }
 
     @Test

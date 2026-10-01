@@ -19,8 +19,9 @@ spec:
               until kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1; do
                 sleep 3
               done
-              for topic in order ltp trade orderbook status; do
+              # One partition for the single-book topics keeps them in production order.
+              for entry in order:1 trade:1 ltp:1 orderbook:1 status:3 trade.DLT:1 status.DLT:1; do
                 kafka-topics --bootstrap-server kafka:9092 \
                   --create --if-not-exists --replication-factor 1 \
-                  --partitions 3 --topic "$topic"
+                  --partitions "${entry#*:}" --topic "${entry%%:*}"
               done

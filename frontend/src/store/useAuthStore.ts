@@ -32,7 +32,7 @@ interface LoginData {
   phone: string;
 }
 
-interface Order {
+export interface Order {
   orderId: number;
   userId: number;
   price: number;
@@ -40,6 +40,7 @@ interface Order {
   side: string;
   type: string; // "market" or "limit"
   createdAt: string; // ISO date string
+  cancelRequested?: boolean; // true while the matcher has not answered a cancel request
 }
 
 interface TradeHistory {
@@ -98,6 +99,7 @@ interface AuthStore {
     type: string
   ) => Promise<void>;
   getOrders: () => Promise<void>;
+  cancelOrder: (orderId: number) => Promise<void>;
   getTradeHistory: () => Promise<void>;
   orders: Order[];
   pastTrades: TradeHistory[];
@@ -609,6 +611,32 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     } finally {
       set({ isGettingOrder: false });
     }
+  },
+  cancelOrder: async (orderId) => {
+    try {
+      const fp = await FingerprintJS.load();
+      const { visitorId } = await fp.get();
+      const tradeApi = axiosInstance("trade");
+      await tradeApi.post(
+        "/cancelOrder",
+        { orderId },
+        { headers: { "X-Device-Fingerprint": visitorId } }
+      );
+      get().addToast({
+        title: "Cancel Requested",
+        description: `Cancel for order #${orderId} sent to the matching engine`,
+      });
+    } catch (error) {
+      get().addToast({
+        title: "Error",
+        description:
+          isAxiosError(error) && (error.response?.status === 404 || error.response?.status === 409)
+            ? error.response.data?.error || "This order cannot be cancelled"
+            : "Failed to cancel order",
+        variant: "destructive",
+      });
+    }
+    await get().getOrders();
   },
   getTradeHistory: async () => {
     const accountPhone = get().authUser?.phoneNumber;

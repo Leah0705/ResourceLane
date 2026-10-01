@@ -16,6 +16,12 @@ public class OrderProducer {
     /** Logger for tracking order producer operations. */
     private static final Logger logger = LoggerFactory.getLogger(OrderProducer.class);
 
+    /**
+     * Every order and cancel shares one key. Kafka keeps records with the same key on one
+     * partition, so the matcher reads them in the order the outbox sent them.
+     */
+    static final String BOOK_KEY = "resource";
+
     /** Template for sending messages to Kafka topics. */
     private final KafkaTemplate<String, String> kafkaTemplate;
 
@@ -29,13 +35,13 @@ public class OrderProducer {
     }
 
     /**
-     * Sends an order to the "order" Kafka topic.
+     * Sends an order or cancel message to the "order" Kafka topic.
      *
-     * @param orderJson The order details in JSON format.
+     * @param orderJson The message in JSON format.
      */
     public CompletableFuture<SendResult<String, String>> sendOrder(String orderJson) {
 
-        CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send("order", orderJson);
+        CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send("order", BOOK_KEY, orderJson);
         future.whenComplete((result, ex) -> {
             if (ex != null) {
                 logger.error("Failed to send order to Kafka: {}", ex.getMessage());

@@ -206,7 +206,7 @@ class WalletControllerTest {
     }
 
     @Test
-    void updateWallets_exceptionHandling() throws Exception {
+    void updateWallets_invalidExecutionIsUnprocessable() throws Exception {
         TradeDTO tradeDTO = new TradeDTO();
         tradeDTO.setBuyUserId("1");
         tradeDTO.setSellUserId("2");
@@ -220,8 +220,39 @@ class WalletControllerTest {
                         .header("X-Internal-Secret", "mySecretToken")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(tradeDTO)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.error").value("Invalid trade execution: Insufficient balance"));
+    }
+
+    @Test
+    void updateWallets_unexpectedFailureIsServerError() throws Exception {
+        TradeDTO tradeDTO = new TradeDTO();
+        tradeDTO.setBuyUserId("1");
+        tradeDTO.setSellUserId("2");
+        tradeDTO.setPrice(100.0);
+        tradeDTO.setQuantity(5);
+        doThrow(new IllegalStateException("database unavailable"))
+                .when(walletService).updateWallets(any(TradeDTO.class));
+
+        mockMvc.perform(post("/api/wallet/internal/updateWallets")
+                        .with(internalPath())
+                        .header("X-Internal-Secret", "mySecretToken")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(tradeDTO)))
                 .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.error").value("Exception in updating wallets: Insufficient balance"));
+                .andExpect(jsonPath("$.error").value("Exception in updating wallets: database unavailable"));
+    }
+
+    @Test
+    void updateWallets_secretPrefixIsUnauthorized() throws Exception {
+        mockMvc.perform(post("/api/wallet/internal/updateWallets")
+                        .with(internalPath())
+                        .header("X-Internal-Secret", "mySecretToke")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized());
+
+        verify(walletService, never()).updateWallets(any());
     }
 
     // ─────────────────────────────────────────────────────────────────────────

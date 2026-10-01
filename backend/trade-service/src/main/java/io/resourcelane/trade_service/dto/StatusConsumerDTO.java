@@ -36,6 +36,10 @@ public class StatusConsumerDTO {
     private Integer remainingQuantity;
     private Integer matchedQuantity;
     private Boolean completed;
+    /** True when this status answers a cancel request. */
+    private Boolean cancelled;
+    /** Quantity the matcher removed from the book; 0 when nothing was left to cancel. */
+    private Integer cancelledQuantity;
 
     public StatusConsumerDTO(String orderId, String userId, String side, int quantity) {
         this.orderId = orderId;

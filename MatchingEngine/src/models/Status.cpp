@@ -62,6 +62,19 @@ namespace models
     int Status::matchedQuantity() const { return matchedQuantity_; }
     bool Status::completed() const { return completed_; }
 
+    Status Status::cancellation(std::string orderId, std::string userId, std::string side,
+                                int cancelledQuantity, std::chrono::system_clock::time_point ts)
+    {
+        Status status(std::move(orderId), std::move(userId), std::move(side), 0, 0, true, ts);
+        status.cancelled_ = true;
+        status.cancelledQuantity_ = cancelledQuantity;
+        return status;
+    }
+
+    bool Status::cancelled() const { return cancelled_; }
+
+    int Status::cancelledQuantity() const { return cancelledQuantity_; }
+
     /**
      * @brief Gets the timestamp when this status was generated.
      * @return The timestamp.

@@ -22,6 +22,7 @@ import org.slf4j.LoggerFactory;
 
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.security.core.AuthenticationException;
 
 import java.util.Map;
@@ -123,6 +124,11 @@ public class AuthController {
 
             logger.info("User {} logged in successfully", user.getUserId());
             return ResponseEntity.ok(Map.of("message", "Login successful", "User", user));
+        } catch (LockedException e) {
+            String maskedPhone = request.getPhoneNumber().replaceAll(".(?=.{4})", "*");
+            logger.warn("TOTP verification locked for phone: {}", maskedPhone);
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .body(Map.of("error", "Too many failed attempts. Try again later."));
         } catch (AuthenticationException e) {
             String maskedPhone = request.getPhoneNumber().replaceAll(".(?=.{4})", "*");
             logger.error("Authentication failed for phone: {}", maskedPhone, e);

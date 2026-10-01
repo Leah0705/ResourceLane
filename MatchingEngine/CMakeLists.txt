@@ -76,6 +76,7 @@ add_executable(MatchingEngineTests
     tests/ModelTests.cpp
     tests/OrderMatchingServiceTests.cpp
     tests/OrderBookStateStoreTests.cpp
+    tests/OrderMessageTests.cpp
 )
 target_link_libraries(MatchingEngineTests PRIVATE MatchingEngineLib Catch2::Catch2WithMain)
 target_compile_options(MatchingEngineTests PRIVATE -Wall -Wextra -Wpedantic)

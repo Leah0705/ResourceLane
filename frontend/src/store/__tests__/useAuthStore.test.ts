@@ -154,6 +154,38 @@ describe("useAuthStore", () => {
     ).rejects.toThrow();
   });
 
+  it("cancelOrder posts the order ID and refreshes open orders", async () => {
+    useAuthStore.setState({ authUser: { userName: "a", phoneNumber: "1", balances: { credits: 0, units: 0 } } });
+    mockApi.post.mockResolvedValueOnce({ data: { status: "Cancel request queued" } });
+    mockApi.get.mockResolvedValueOnce({ data: { orders: [{ ...oldOrder, type: "LIMIT", cancelRequested: true }] } });
+
+    await useAuthStore.getState().cancelOrder(1);
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/cancelOrder",
+      { orderId: 1 },
+      { headers: { "X-Device-Fingerprint": "fp123" } }
+    );
+    expect(useAuthStore.getState().orders[0].cancelRequested).toBe(true);
+    expect(useAuthStore.getState().toasts.at(-1)?.title).toBe("Cancel Requested");
+  });
+
+  it("cancelOrder shows the server's reason when the order cannot be cancelled", async () => {
+    useAuthStore.setState({ authUser: { userName: "a", phoneNumber: "1", balances: { credits: 0, units: 0 } } });
+    const rejection = Object.assign(new Error("conflict"), {
+      isAxiosError: true,
+      response: { status: 409, data: { error: "Cancel already requested" } },
+    });
+    mockApi.post.mockRejectedValueOnce(rejection);
+    mockApi.get.mockResolvedValueOnce({ data: { orders: [] } });
+
+    await useAuthStore.getState().cancelOrder(1);
+
+    const toast = useAuthStore.getState().toasts.at(-1);
+    expect(toast?.title).toBe("Error");
+    expect(toast?.description).toBe("Cancel already requested");
+  });
+
   it("addToast adds a toast to the list", () => {
     const id = useAuthStore.getState().addToast({
       title: "Test",

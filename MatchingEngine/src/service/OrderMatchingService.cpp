@@ -10,10 +10,28 @@
 #include <chrono>
 #include <iostream>
 #include <cstdlib>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace core
 {
+    namespace
+    {
+        constexpr std::size_t kDefaultDedupWindow = 10000;
+
+        std::size_t dedupWindowFromEnv()
+        {
+            const char *value = std::getenv("MATCHER_DEDUP_WINDOW");
+            if (!value || !*value)
+                return kDefaultDedupWindow;
+            std::size_t parsed = 0;
+            const long long window = std::stoll(value, &parsed);
+            if (parsed != std::string(value).size() || window <= 0)
+                throw std::invalid_argument("MATCHER_DEDUP_WINDOW must be a positive integer");
+            return static_cast<std::size_t>(window);
+        }
+    } // namespace
+
     /**
      * @brief Constructor for OrderMatchingService.
      * 
@@ -21,13 +39,27 @@ namespace core
      * It also implicitly initializes the Kafka producers for trades, LTP, and orderbook snapshots.
      */
     OrderMatchingService::OrderMatchingService()
-        : book_(OrderBook::getInstance())
+        : book_(OrderBook::getInstance()), recentIds_(dedupWindowFromEnv())
     {
         const char* statePath = std::getenv("MATCHER_STATE_FILE");
         if (statePath && *statePath) {
             stateStore_ = std::make_unique<OrderBookStateStore>(statePath);
-            stateStore_->load(book_, processedOrderIds_);
+            stateStore_->load(book_, recentIds_, offsets_);
         }
+    }
+
+    bool OrderMatchingService::alreadyApplied(const MessagePosition &position) const
+    {
+        auto it = offsets_.find(position.partition);
+        return it != offsets_.end() && position.offset <= it->second;
+    }
+
+    void OrderMatchingService::handle(const dto::OrderMessage &message, std::optional<MessagePosition> position)
+    {
+        if (message.action == dto::OrderAction::CANCEL)
+            handleCancel(message.order.order_id, message.order.user_id, position);
+        else
+            handleOrder(message.order, position);
     }
 
     /**
@@ -41,11 +73,12 @@ namespace core
      * 
      * @param dto The data transfer object containing the incoming order's parameters.
      */
-    void OrderMatchingService::handleOrder(const dto::OrderData &dto)
+    void OrderMatchingService::handleOrder(const dto::OrderData &dto, std::optional<MessagePosition> position)
     {
-        // The trade-service outbox can republish after an uncertain Kafka ack.
-        // Persisted order IDs suppress those duplicates across matcher restarts.
-        if (!processedOrderIds_.insert(dto.order_id).second)
+        // The trade-service outbox can republish after an uncertain Kafka ack, at a new offset.
+        // Recent order IDs catch those copies; an order still resting in the book is caught
+        // even after its ID has left the window.
+        if (findResting(dto.order_id) || !recentIds_.insert(dto.order_id))
             return;
 
         Order order = OrderFactory::create(dto);
@@ -98,7 +131,55 @@ namespace core
 
         models::OrderBookSnapshot snapshot(book_.getBids(), book_.getAsks(), std::chrono::system_clock::now()); // Pass the order book to the constructor
         obProd_.publish(snapshot);
-        if (stateStore_) stateStore_->save(book_, processedOrderIds_);
+        recordAndSave(position);
+    }
+
+    void OrderMatchingService::handleCancel(const std::string &orderId, const std::string &userId,
+                                            std::optional<MessagePosition> position)
+    {
+        // A cancel has its own ID so it is not mistaken for a copy of the original order.
+        if (!recentIds_.insert("cancel:" + orderId))
+            return;
+
+        int cancelled = 0;
+        std::string side;
+        const Order *resting = findResting(orderId);
+        if (resting && resting->user_id() == userId)
+        {
+            const Order removed = *resting;
+            cancelled = removed.quantity();
+            side = removed.side() == dto::Side::BUY ? "BUY" : "SELL";
+            book_.removeOrder(removed);
+        }
+        statusProd_.publish(models::Status::cancellation(orderId, userId, side, cancelled,
+                                                         std::chrono::system_clock::now()));
+        if (cancelled > 0)
+        {
+            models::OrderBookSnapshot snapshot(book_.getBids(), book_.getAsks(), std::chrono::system_clock::now());
+            obProd_.publish(snapshot);
+        }
+        recordAndSave(position);
+    }
+
+    const Order *OrderMatchingService::findResting(const std::string &orderId) const
+    {
+        for (const auto &[price, level] : book_.getBids())
+            for (const auto &order : level)
+                if (order.order_id() == orderId)
+                    return &order;
+        for (const auto &[price, level] : book_.getAsks())
+            for (const auto &order : level)
+                if (order.order_id() == orderId)
+                    return &order;
+        return nullptr;
+    }
+
+    void OrderMatchingService::recordAndSave(std::optional<MessagePosition> position)
+    {
+        if (position)
+            offsets_[position->partition] = position->offset;
+        if (stateStore_)
+            stateStore_->save(book_, recentIds_, offsets_);
     }
 
 } // namespace core

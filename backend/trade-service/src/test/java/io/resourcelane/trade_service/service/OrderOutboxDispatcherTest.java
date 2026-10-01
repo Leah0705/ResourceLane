@@ -53,4 +53,39 @@ class OrderOutboxDispatcherTest {
         assertThat(event.getPublishedAt()).isNull();
         verify(outbox, never()).save(event);
     }
+
+    @Test
+    void newOrdersAreSentBeforeCancels() throws Exception {
+        OrderOutboxEvent event = new OrderOutboxEvent(124L, "{\"orderId\":\"124\"}");
+        when(outbox.findPending(any(Pageable.class))).thenReturn(List.of(event));
+        when(producer.sendOrder(event.getPayload()))
+                .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
+
+        assertThat(dispatcher.dispatchNext()).isTrue();
+        verify(outbox, never()).findPendingCancels(any(Pageable.class));
+    }
+
+    @Test
+    void sendsCancelPayloadAndMarksItPublishedAfterAck() throws Exception {
+        OrderOutboxEvent event = new OrderOutboxEvent(125L, "{\"orderId\":\"125\"}");
+        event.markPublished();
+        event.requestCancel("{\"action\":\"CANCEL\",\"orderId\":\"125\",\"userId\":\"7\"}");
+        when(outbox.findPending(any(Pageable.class))).thenReturn(List.of());
+        when(outbox.findPendingCancels(any(Pageable.class))).thenReturn(List.of(event));
+        when(producer.sendOrder(event.getCancelPayload()))
+                .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
+
+        assertThat(dispatcher.dispatchNext()).isTrue();
+        assertThat(event.getCancelPublishedAt()).isNotNull();
+        verify(outbox).save(event);
+    }
+
+    @Test
+    void reportsNothingToSendWhenBothQueuesAreEmpty() throws Exception {
+        when(outbox.findPending(any(Pageable.class))).thenReturn(List.of());
+        when(outbox.findPendingCancels(any(Pageable.class))).thenReturn(List.of());
+
+        assertThat(dispatcher.dispatchNext()).isFalse();
+        verifyNoInteractions(producer);
+    }
 }

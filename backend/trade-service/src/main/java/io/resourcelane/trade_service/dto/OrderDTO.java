@@ -50,6 +50,11 @@ public class OrderDTO {
      */
     private Timestamp createdAt;
 
+    /**
+     * True while a cancel request for this order is waiting for the matcher's answer.
+     */
+    private boolean cancelRequested;
+
 }
 
 

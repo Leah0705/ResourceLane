@@ -1,5 +1,6 @@
 package io.resourcelane.trade_service.controller;
 
+import io.resourcelane.trade_service.dto.CancelOrderRequest;
 import io.resourcelane.trade_service.dto.OrderDTO;
 import io.resourcelane.trade_service.dto.OrderRequest;
 import io.resourcelane.trade_service.dto.PastTradeDTO;
@@ -7,6 +8,7 @@ import io.resourcelane.trade_service.service.TradeService;
 import jakarta.validation.Valid;
 
 import java.util.List;
+import java.util.NoSuchElementException;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -68,6 +70,34 @@ public class TradeController {
             logger.error("Exception while placing order for user {}: {}", authentication != null ? authentication.getPrincipal() : "unknown", e.getMessage(), e);
             return ResponseEntity.status(500)
                     .body(java.util.Map.of("error", "Failed to send order exception: " + e.getMessage()));
+        }
+    }
+
+    /**
+     * Queues a cancel request for one of the user's resting limit orders.
+     * The matcher's answer arrives later as a status update and a toast.
+     *
+     * @param request        The order to cancel.
+     * @param authentication The current user's authentication.
+     * @return 202 when queued, 404 for an unknown order, 409 when the order cannot be cancelled.
+     */
+    @PostMapping("/cancelOrder")
+    public ResponseEntity<?> cancelOrder(@Valid @RequestBody CancelOrderRequest request, Authentication authentication) {
+        if (authentication == null || authentication.getPrincipal() == null) {
+            return ResponseEntity.status(401)
+                    .body(java.util.Map.of("error", "Unauthorized: User not authenticated"));
+        }
+        Long userId = (Long) authentication.getPrincipal();
+        try {
+            tradeService.requestCancel(request.getOrderId(), userId);
+            return ResponseEntity.accepted().body(java.util.Map.of("status", "Cancel request queued"));
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(404).body(java.util.Map.of("error", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(409).body(java.util.Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            logger.error("Failed to cancel order {} for user {}: {}", request.getOrderId(), userId, e.getMessage(), e);
+            return ResponseEntity.status(500).body(java.util.Map.of("error", "Failed to cancel order"));
         }
     }
 

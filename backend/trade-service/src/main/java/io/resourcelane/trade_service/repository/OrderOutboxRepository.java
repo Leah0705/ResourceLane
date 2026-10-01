@@ -13,4 +13,10 @@ public interface OrderOutboxRepository extends JpaRepository<OrderOutboxEvent, L
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select e from OrderOutboxEvent e where e.publishedAt is null order by e.orderId")
     List<OrderOutboxEvent> findPending(Pageable pageable);
+
+    /** Cancels whose order has already been published, so the matcher always sees the order first. */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select e from OrderOutboxEvent e where e.cancelPayload is not null and e.cancelPublishedAt is null"
+            + " and e.publishedAt is not null order by e.orderId")
+    List<OrderOutboxEvent> findPendingCancels(Pageable pageable);
 }

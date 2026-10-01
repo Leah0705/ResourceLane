@@ -28,7 +28,7 @@ public class OrderBookConsumer {
      *
      * @param message The order book message in JSON format.
      */
-    @KafkaListener(topics = "orderbook", groupId = "MatchingEngine-group")
+    @KafkaListener(topics = "orderbook", containerFactory = "marketDataListenerFactory")
     public void listenOrderBook(String message) {
         orderBookCache.set(message);
     }

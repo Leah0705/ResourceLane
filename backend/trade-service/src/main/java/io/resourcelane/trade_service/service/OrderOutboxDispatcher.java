@@ -21,15 +21,29 @@ public class OrderOutboxDispatcher {
         this.producer = producer;
     }
 
+    /**
+     * Publishes one pending message and marks it only after Kafka acknowledges it.
+     * New orders go first; a cancel is eligible only once its order has been published.
+     *
+     * @return true when a message was published.
+     */
     @Transactional
     public boolean dispatchNext() throws Exception {
         List<OrderOutboxEvent> pending = outbox.findPending(PageRequest.of(0, 1));
-        if (pending.isEmpty()) {
+        if (!pending.isEmpty()) {
+            OrderOutboxEvent event = pending.get(0);
+            producer.sendOrder(event.getPayload()).get(5, TimeUnit.SECONDS);
+            event.markPublished();
+            outbox.save(event);
+            return true;
+        }
+        List<OrderOutboxEvent> cancels = outbox.findPendingCancels(PageRequest.of(0, 1));
+        if (cancels.isEmpty()) {
             return false;
         }
-        OrderOutboxEvent event = pending.get(0);
-        producer.sendOrder(event.getPayload()).get(5, TimeUnit.SECONDS);
-        event.markPublished();
+        OrderOutboxEvent event = cancels.get(0);
+        producer.sendOrder(event.getCancelPayload()).get(5, TimeUnit.SECONDS);
+        event.markCancelPublished();
         outbox.save(event);
         return true;
     }

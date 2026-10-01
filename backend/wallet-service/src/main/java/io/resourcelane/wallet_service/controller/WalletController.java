@@ -21,6 +21,8 @@ import io.resourcelane.wallet_service.dto.WithdrawUnitsRequestDTO;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Map;
 
 /**
@@ -131,7 +133,7 @@ public class WalletController {
 
         // Validate internal service secret
         try{
-            if (!(internalSecretToken.equals(internalSecret))) {
+            if (!secretMatches(internalSecret)) {
                 logger.warn("Unauthorized internal wallet update attempt");
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Unauthorized internal call");
             }
@@ -139,10 +141,23 @@ public class WalletController {
             logger.info("Updating wallets for trade between users {} and {}", tradeDTO.getBuyUserId(), tradeDTO.getSellUserId());
             walletService.updateWallets(tradeDTO);
             return ResponseEntity.ok(Map.of("message", "wallet updated successfully"));
+        } catch (IllegalArgumentException e) {
+            // The execution itself is invalid and will fail on every retry; tell the caller not to retry it.
+            logger.error("Rejected wallet update: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(Map.of("error", "Invalid trade execution: " + e.getMessage()));
         } catch (Exception e) {
             logger.error("Exception in updating wallets: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("error", "Exception in updating wallets: " + e.getMessage()));
         }
+    }
+
+    /** Compares the internal token in constant time, so response timing does not reveal it. */
+    private boolean secretMatches(String provided) {
+        if (provided == null || internalSecretToken == null) {
+            return false;
+        }
+        return MessageDigest.isEqual(internalSecretToken.getBytes(StandardCharsets.UTF_8),
+                provided.getBytes(StandardCharsets.UTF_8));
     }
 
     /**

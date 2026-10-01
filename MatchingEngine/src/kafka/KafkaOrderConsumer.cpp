@@ -7,10 +7,9 @@
 #include <cppkafka/configuration.h>
 #include <cppkafka/message.h>
 #include <cppkafka/consumer.h>
-#include <nlohmann/json.hpp>
 #include <iostream>
-#include <cmath>
 #include <stdexcept>
+#include "kafka/OrderMessageParser.hpp"
 #include "service/OrderMatchingService.hpp"
 
 namespace kafka
@@ -48,43 +47,42 @@ namespace kafka
         while (true)
         {
             auto msg = consumer_->poll(std::chrono::seconds(1));
-            if (msg && !msg.get_error())
+            if (!msg)
+                continue;
+            if (msg.get_error())
             {
-                    std::string payload = msg.get_payload(); // Get as string
-                    if (payload.empty()) throw std::runtime_error("Empty order message");
-                        nlohmann::json j = nlohmann::json::parse(payload);
-                        std::string order_id = j.at("orderId").get<std::string>();
-                        std::string user_id = j.at("userId").get<std::string>();
-                        int quantity = j.at("quantity").get<int>();
-                        double price = j.at("price").get<double>();
-                        std::string side = j.at("side").get<std::string>();
-                        std::string type = j.at("type").get<std::string>();
-                        if (order_id.empty() || user_id.empty() || quantity <= 0
-                                || !std::isfinite(price) || price <= 0)
-                            throw std::runtime_error("Invalid order message");
-                        dto::Side parsedSide;
-                        if (side == "BUY") parsedSide = dto::Side::BUY;
-                        else if (side == "SELL") parsedSide = dto::Side::SELL;
-                        else throw std::runtime_error("Invalid side: " + side);
-
-                        dto::OrderType parsedType;
-                        if (type == "MARKET") parsedType = dto::OrderType::MARKET;
-                        else if (type == "LIMIT") parsedType = dto::OrderType::LIMIT;
-                        else throw std::runtime_error("Invalid order type: " + type);
-
-                        dto::OrderData orderData = {
-                            order_id,
-                            user_id,
-                            quantity,
-                            price,
-                            parsedSide,
-                            parsedType};
-                        std::cout << "Received order: " << user_id << std::endl;
-                        svc.handleOrder(orderData);
-                        consumer_->commit(msg);
-            }
-            else if (msg && msg.get_error())
+                if (msg.is_eof())
+                    continue;
+                // Broker and network errors are infrastructure failures: crash and let the restart retry.
                 throw std::runtime_error("Kafka order poll failed: " + msg.get_error().to_string());
+            }
+
+            const core::MessagePosition position{msg.get_partition(), msg.get_offset()};
+            if (svc.alreadyApplied(position))
+            {
+                // Saved state already includes this message; only the offset commit was lost.
+                consumer_->commit(msg);
+                continue;
+            }
+
+            dto::OrderMessage order;
+            try
+            {
+                const std::string payload = msg.get_payload();
+                order = parseOrderMessage(payload);
+            }
+            catch (const std::invalid_argument &e)
+            {
+                // A bad message would fail the same way after every restart, so record it and move on.
+                std::cerr << "Skipping invalid order message at partition " << position.partition
+                          << " offset " << position.offset << ": " << e.what() << std::endl;
+                consumer_->commit(msg);
+                continue;
+            }
+
+            std::cout << "Received order message for order " << order.order.order_id << std::endl;
+            svc.handle(order, position);
+            consumer_->commit(msg);
         }
     }
 

@@ -29,7 +29,7 @@ public class LtpConsumer {
      *
      * @param message The LTP message in JSON format.
      */
-    @KafkaListener(topics = "ltp", groupId = "MatchingEngine-group")
+    @KafkaListener(topics = "ltp", containerFactory = "marketDataListenerFactory")
     public void listenLtp(String message) {
         ltpCache.set(message); // Just store
     }

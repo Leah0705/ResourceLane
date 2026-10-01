@@ -28,17 +28,20 @@ class OrderProducerTest {
     @Captor
     private ArgumentCaptor<String> topicCaptor;
     @Captor
+    private ArgumentCaptor<String> keyCaptor;
+    @Captor
     private ArgumentCaptor<String> messageCaptor;
 
     @Test
     void sendOrder_shouldSendToKafkaTopic() {
         String orderJson = "{\"orderId\":\"100\",\"userId\":\"1\",\"quantity\":5,\"price\":50000.0,\"side\":\"BUY\",\"type\":\"LIMIT\"}";
-        when(kafkaTemplate.send(anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
+        when(kafkaTemplate.send(anyString(), anyString(), anyString())).thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
 
         orderProducer.sendOrder(orderJson);
 
-        verify(kafkaTemplate).send(topicCaptor.capture(), messageCaptor.capture());
+        verify(kafkaTemplate).send(topicCaptor.capture(), keyCaptor.capture(), messageCaptor.capture());
         assertThat(topicCaptor.getValue()).isEqualTo("order");
+        assertThat(keyCaptor.getValue()).isEqualTo(OrderProducer.BOOK_KEY);
         assertThat(messageCaptor.getValue()).isEqualTo(orderJson);
     }
 
@@ -47,17 +50,17 @@ class OrderProducerTest {
         String orderJson = "{\"orderId\":\"100\"}";
         CompletableFuture<SendResult<String, String>> failedFuture = new CompletableFuture<>();
         failedFuture.completeExceptionally(new RuntimeException("Kafka unavailable"));
-        when(kafkaTemplate.send(anyString(), anyString())).thenReturn(failedFuture);
+        when(kafkaTemplate.send(anyString(), anyString(), anyString())).thenReturn(failedFuture);
 
         orderProducer.sendOrder(orderJson);
 
-        verify(kafkaTemplate).send("order", orderJson);
+        verify(kafkaTemplate).send("order", OrderProducer.BOOK_KEY, orderJson);
     }
 
     @Test
     void sendOrder_shouldPropagateSyncException() {
         String orderJson = "{\"orderId\":\"100\"}";
-        when(kafkaTemplate.send(anyString(), anyString())).thenThrow(new RuntimeException("Broker not available"));
+        when(kafkaTemplate.send(anyString(), anyString(), anyString())).thenThrow(new RuntimeException("Broker not available"));
 
         assertThatThrownBy(() -> orderProducer.sendOrder(orderJson))
                 .isInstanceOf(RuntimeException.class)

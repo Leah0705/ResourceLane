@@ -52,9 +52,15 @@ namespace kafka
             j["matchedQuantity"] = s.matchedQuantity();
             j["completed"] = s.completed();
         }
+        if (s.cancelled())
+        {
+            j["cancelled"] = true;
+            j["cancelledQuantity"] = s.cancelledQuantity();
+        }
         std::string payload = j.dump();
         deliverySuccessful_ = false;
-        producer_.produce(cppkafka::MessageBuilder("status").payload(payload));
+        // Keying by order ID keeps every update for one order on one partition, in order.
+        producer_.produce(cppkafka::MessageBuilder("status").key(s.orderId()).payload(payload));
         if (std::getenv("MATCHER_STATE_FILE")) {
             producer_.flush(std::chrono::seconds(10));
             if (!deliverySuccessful_) throw std::runtime_error("Status delivery not confirmed");

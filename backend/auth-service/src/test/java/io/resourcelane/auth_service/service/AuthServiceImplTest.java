@@ -20,6 +20,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.*;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.*;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.LockedException;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.client.HttpClientErrorException;
@@ -115,45 +117,99 @@ class AuthServiceImplTest {
         assertThat(qrCode).isNotNull().startsWith("data:image/png;base64,");
     }
 
+    private User storedUser(String secretKey, String state) {
+        User user = new User(1L, "testuser", "1234567890", secretKey, state);
+        lenient().when(authRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(user));
+        return user;
+    }
+
+    private static long currentStep() {
+        return System.currentTimeMillis() / 1000 / 30;
+    }
+
     @Test
     void verifyTotp_validTotp_setsStateToPermanent() {
         String secretKey = authService.generateSecretKey();
-        User user = new User(1L, "testuser", "1234567890", secretKey, "temporary");
-        String validTotp = computeTotp(secretKey, System.currentTimeMillis() / 1000 / 30);
+        User user = storedUser(secretKey, "temporary");
+        String validTotp = computeTotp(secretKey, currentStep());
         when(authRepository.save(any(User.class))).thenReturn(user);
 
         boolean result = authService.verifyTotp(secretKey, validTotp, user);
 
         assertThat(result).isTrue();
         assertThat(user.getState()).isEqualTo("permanent");
+        assertThat(user.getFailedTotpAttempts()).isZero();
+        assertThat(user.getLastTotpTimeStep()).isNotNull();
         verify(authRepository).save(user);
     }
 
     @Test
     void verifyTotp_invalidTotpAndTemporaryUser_deletesUserAndThrows() {
-        User user = new User(1L, "testuser", "1234567890", "JBSWY3DPEHPK3PXP", "temporary");
+        User user = storedUser("JBSWY3DPEHPK3PXP", "temporary");
 
         assertThatThrownBy(() -> authService.verifyTotp("JBSWY3DPEHPK3PXP", "000000", user))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessage("Failed to verify TOTP");
+                .isInstanceOf(BadCredentialsException.class)
+                .hasMessage("Invalid TOTP code");
 
         verify(authRepository).deleteById(1L);
     }
 
     @Test
-    void verifyTotp_invalidTotpAndPermanentUser_doesNotDeleteAndThrows() {
-        User user = new User(1L, "testuser", "1234567890", "JBSWY3DPEHPK3PXP", "permanent");
+    void verifyTotp_invalidTotpAndPermanentUser_countsFailureWithoutDeleting() {
+        User user = storedUser("JBSWY3DPEHPK3PXP", "permanent");
 
         assertThatThrownBy(() -> authService.verifyTotp("JBSWY3DPEHPK3PXP", "000000", user))
-                .isInstanceOf(RuntimeException.class)
-                .hasMessage("Failed to verify TOTP");
+                .isInstanceOf(BadCredentialsException.class)
+                .hasMessage("Invalid TOTP code");
 
         verify(authRepository, never()).deleteById(anyLong());
+        assertThat(user.getFailedTotpAttempts()).isEqualTo(1);
+        assertThat(user.getTotpLockedUntil()).isNull();
+    }
+
+    @Test
+    void verifyTotp_fifthWrongCodeLocksTheAccount() {
+        String secretKey = authService.generateSecretKey();
+        User user = storedUser(secretKey, "permanent");
+        user.setFailedTotpAttempts(AuthServiceImpl.MAX_FAILED_TOTP_ATTEMPTS - 1);
+
+        assertThatThrownBy(() -> authService.verifyTotp(secretKey, "000000", user))
+                .isInstanceOf(BadCredentialsException.class);
+
+        assertThat(user.getTotpLockedUntil()).isAfter(java.time.Instant.now());
+        assertThat(user.getFailedTotpAttempts()).isZero();
+        String validTotp = computeTotp(secretKey, currentStep());
+        assertThatThrownBy(() -> authService.verifyTotp(secretKey, validTotp, user))
+                .isInstanceOf(LockedException.class);
+        assertThat(user.getState()).isEqualTo("permanent");
+    }
+
+    @Test
+    void verifyTotp_expiredLockAllowsAValidCode() {
+        String secretKey = authService.generateSecretKey();
+        User user = storedUser(secretKey, "permanent");
+        user.setTotpLockedUntil(java.time.Instant.now().minusSeconds(1));
+
+        assertThat(authService.verifyTotp(secretKey, computeTotp(secretKey, currentStep()), user)).isTrue();
+        assertThat(user.getTotpLockedUntil()).isNull();
+    }
+
+    @Test
+    void verifyTotp_sameCodeCannotBeUsedTwice() {
+        String secretKey = authService.generateSecretKey();
+        User user = storedUser(secretKey, "permanent");
+        String validTotp = computeTotp(secretKey, currentStep());
+
+        assertThat(authService.verifyTotp(secretKey, validTotp, user)).isTrue();
+        assertThatThrownBy(() -> authService.verifyTotp(secretKey, validTotp, user))
+                .isInstanceOf(BadCredentialsException.class)
+                .hasMessage("TOTP code already used");
+        assertThat(user.getFailedTotpAttempts()).isEqualTo(1);
     }
 
     @Test
     void verifyTotp_nullSecretKey_throwsRuntimeException() {
-        User user = new User(1L, "testuser", "1234567890", null, "temporary");
+        User user = storedUser(null, "temporary");
 
         assertThatThrownBy(() -> authService.verifyTotp(null, "000000", user))
                 .isInstanceOf(RuntimeException.class)

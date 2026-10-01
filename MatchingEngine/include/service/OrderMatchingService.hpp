@@ -6,23 +6,27 @@
 #include "kafka/KafkaOrderBookProducer.hpp"
 #include "kafka/KafkaStatusProducer.hpp"
 #include "service/OrderBookStateStore.hpp"
+#include "service/RecentIdWindow.hpp"
+#include <cstdint>
 #include <memory>
-#include <unordered_set>
-
-namespace kafka
-{
-    class KafkaOrderConsumer; // Forward declaration
-}
+#include <optional>
+#include <string>
 
 namespace core
 {
+    /** @brief Where a message sits in the order topic. */
+    struct MessagePosition
+    {
+        int partition;
+        std::int64_t offset;
+    };
 
     /**
      * @class OrderMatchingService
-     * @brief Service orchestrating order processing and matching.
+     * @brief Applies order-topic messages to the book and publishes the results.
      *
-     * Handles incoming orders, delegates matching to the order book, and manages
-     * Kafka producers for trades, LTP, and order book snapshots.
+     * Each applied message is saved together with its Kafka offset, so a message
+     * redelivered after a restart is recognised and skipped.
      */
     class OrderMatchingService
     {
@@ -31,24 +35,39 @@ namespace core
         kafka::KafkaLTPProducer ltpProd_;
         kafka::KafkaOrderBookProducer obProd_;
         kafka::KafkaStatusProducer statusProd_;
-        std::unordered_set<std::string> processedOrderIds_;
+        RecentIdWindow recentIds_;
+        PartitionOffsets offsets_;
         std::unique_ptr<OrderBookStateStore> stateStore_;
 
     public:
         /**
-         * @brief Constructs the OrderMatchingService.
+         * @brief Loads saved state when MATCHER_STATE_FILE is set.
+         * MATCHER_DEDUP_WINDOW sets how many recent message IDs are kept (default 10000).
          */
-        OrderMatchingService(); // Explicitly declare the constructor
+        OrderMatchingService();
+
+        /** @brief True when the saved state already includes the message at this position. */
+        bool alreadyApplied(const MessagePosition &position) const;
+
+        /** @brief Dispatches a parsed order-topic message. */
+        void handle(const dto::OrderMessage &message, std::optional<MessagePosition> position = std::nullopt);
 
         /**
-         * @brief Handles an incoming order.
-         *
-         * Creates an order object, matches it against the order book, publishes
-         * resulting trades and updates to Kafka.
-         *
-         * @param dto The order data DTO.
+         * @brief Matches a new order and publishes trades, statuses, LTP and the book snapshot.
+         * A republished order ID is ignored.
          */
-        void handleOrder(const dto::OrderData &dto);
+        void handleOrder(const dto::OrderData &dto, std::optional<MessagePosition> position = std::nullopt);
+
+        /**
+         * @brief Removes the user's resting order and reports how much was cancelled.
+         * Reports 0 when the order is no longer resting, for example because it already filled.
+         */
+        void handleCancel(const std::string &orderId, const std::string &userId,
+                          std::optional<MessagePosition> position = std::nullopt);
+
+    private:
+        const Order *findResting(const std::string &orderId) const;
+        void recordAndSave(std::optional<MessagePosition> position);
     };
 
 } // namespace core

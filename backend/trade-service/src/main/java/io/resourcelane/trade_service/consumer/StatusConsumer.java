@@ -37,7 +37,7 @@ public class StatusConsumer {
      *
      * @param message The JSON message received from Kafka.
      */
-    @KafkaListener(topics = "status", groupId = "MatchingEngine-group")
+    @KafkaListener(topics = "status")
     public void listenTrade(String message) {
         try {
             StatusConsumerDTO statusConsumerDTO = objectMapper.readValue(message, StatusConsumerDTO.class);

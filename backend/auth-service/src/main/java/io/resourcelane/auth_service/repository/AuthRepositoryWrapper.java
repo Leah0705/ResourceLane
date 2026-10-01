@@ -2,7 +2,11 @@ package io.resourcelane.auth_service.repository;
 
 import io.resourcelane.auth_service.model.User;
 import java.util.Optional;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Repository interface for User entity operations.
@@ -21,4 +25,12 @@ public interface AuthRepositoryWrapper extends JpaRepository<User, Long> {
      * @return An Optional containing the User entity if a match is found, or empty if no user exists.
      */
     Optional<User> findByPhoneNumber(String phoneNumber);
+
+    /**
+     * Loads a user with a row lock, so concurrent verifications of one account run one at a time
+     * and cannot reuse the same code or miscount failures.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select u from User u where u.userId = :userId")
+    Optional<User> findByIdForUpdate(@Param("userId") Long userId);
 }

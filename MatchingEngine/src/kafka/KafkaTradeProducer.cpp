@@ -11,6 +11,11 @@
 
 namespace kafka
 {
+    namespace
+    {
+        const std::string kBookKey{"resource"};
+    }
+
 
     /**
      * @brief Default constructor for KafkaTradeProducer.
@@ -51,7 +56,8 @@ namespace kafka
             {"timestamp", ms}};
         std::string payload = j.dump();
         deliverySuccessful_ = false;
-        producer_.produce(cppkafka::MessageBuilder("trade").payload(payload));
+        // One book, one key: consumers see these events in the order the matcher produced them.
+        producer_.produce(cppkafka::MessageBuilder("trade").key(kBookKey).payload(payload));
         if (std::getenv("MATCHER_STATE_FILE")) {
             producer_.flush(std::chrono::seconds(10));
             if (!deliverySuccessful_) throw std::runtime_error("Trade delivery not confirmed");

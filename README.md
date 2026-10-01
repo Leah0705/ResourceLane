@@ -2,7 +2,7 @@
 
 ResourceLane is an independently developed local learning prototype for matching orders for standardized resource units and settling them with **simulated credits**. A unit can stand for a fungible capacity entitlement or another standardized resource in a demo; this implementation runs one resource market. It does not process real payments or allocate physical inventory.
 
-The stack is React, three Spring Boot services, a C++ matching engine, Kafka, PostgreSQL, Docker, and Kubernetes. Users register with a 10-digit demo account ID and TOTP, add demo credits or resource units, place buy and sell orders, and inspect matched trades.
+The stack is React, three Spring Boot services, a C++ matching engine, Kafka, PostgreSQL, Docker, and Kubernetes. Users register with a 10-digit demo account ID and TOTP, add demo credits or resource units, place buy and sell orders, cancel resting limit orders, and inspect matched trades.
 
 ![ResourceLane dashboard from a local demo](docs/screenshots/dashboard.jpg)
 
@@ -31,11 +31,13 @@ The Java services share one local PostgreSQL instance. Kubernetes Services provi
 ## Reliability work
 
 - The order service saves an order and its pending Kafka event in one database transaction. A relay publishes the event and records broker acknowledgement.
+- Orders and cancels are sent with one Kafka key to a single-partition `order` topic, so the matcher reads them in submission order. A cancel shares its order's outbox row and is published only after the order.
 - Each matched order pair has a stable execution ID. The wallet commits the credit and unit transfer with a unique settlement marker; repeated Kafka delivery cannot repeat the same transfer.
 - Placing an order reserves its maximum credits or units in the shared PostgreSQL transaction that creates the order and outbox event. Withdrawals exclude active reservations. A buy market order executes only up to the entered maximum price; its unmatched quantity is released after the completion event.
 - The order service rejects an incoming order that could cross the same user's active opposite-side order before publishing it. Trade history stores each fill separately, preserving its execution price.
-- The matcher saves resting orders, last price, and processed order IDs to a persistent volume after Kafka confirms its outputs, then commits the input offset. Replayed status updates use absolute remaining quantities.
-- Wallet credits use PostgreSQL `NUMERIC(19,2)`. Failed Kafka consumer records are retried instead of being acknowledged automatically.
+- The matcher saves resting orders, last price, recent message IDs, and the applied input offset to a persistent volume after Kafka confirms its outputs, then commits the offset. A message at or below the saved offset is skipped after a restart; the recent-ID window (`MATCHER_DEDUP_WINDOW`, default 10000) catches orders the outbox republished. A malformed order message is logged and skipped instead of stopping the matcher. Replayed status updates use absolute remaining quantities.
+- Wallet credits use PostgreSQL `NUMERIC(19,2)`. Settlement records (`trade`, `status`) are retried while the wallet or database is unavailable; a record that fails validation moves to `trade.DLT` or `status.DLT` so it cannot block later settlements. Market data (`ltp`, `orderbook`) uses a consumer group per instance and skips a failed update.
+- TOTP verification locks an account for 15 minutes after five wrong codes and refuses a code that was already used. NGINX rate-limits `/api/auth/verify` and does not route the internal settlement endpoint.
 - Health endpoints are available to Kubernetes probes without a JWT. Business endpoints remain authenticated.
 
 ## Run locally with Docker Compose

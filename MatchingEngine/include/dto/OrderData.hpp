@@ -38,4 +38,24 @@ namespace dto
         dto::OrderType type;  /**< Type of the order (Market/Limit) */
     };
 
+    /**
+     * @enum OrderAction
+     * @brief What an inbound message asks the matcher to do.
+     */
+    enum class OrderAction
+    {
+        NEW,
+        CANCEL
+    };
+
+    /**
+     * @struct OrderMessage
+     * @brief A parsed message from the order topic. A cancel only uses order_id and user_id.
+     */
+    struct OrderMessage
+    {
+        OrderAction action{OrderAction::NEW};
+        OrderData order{};
+    };
+
 } // namespace dto

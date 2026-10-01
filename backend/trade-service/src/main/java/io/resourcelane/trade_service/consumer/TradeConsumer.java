@@ -31,7 +31,7 @@ public class TradeConsumer {
      *
      * @param message The trade message in JSON format.
      */
-    @KafkaListener(topics = "trade", groupId = "MatchingEngine-group")
+    @KafkaListener(topics = "trade")
     public void listenTrade(String message) {
         try {
             TradeConsumerDTO tradeConsumerDTO = objectMapper.readValue(message, TradeConsumerDTO.class);

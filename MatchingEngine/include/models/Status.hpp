@@ -18,6 +18,8 @@ namespace models
         int remainingQuantity_{-1};
         int matchedQuantity_{0};
         bool completed_{false};
+        bool cancelled_{false};
+        int cancelledQuantity_{0};
         std::chrono::system_clock::time_point ts_;
 
     public:
@@ -61,6 +63,15 @@ namespace models
         int remainingQuantity() const;
         int matchedQuantity() const;
         bool completed() const;
+
+        /**
+         * @brief Builds the matcher's answer to a cancel request.
+         * @param cancelledQuantity Quantity removed from the book; 0 when the order was no longer resting.
+         */
+        static Status cancellation(std::string orderId, std::string userId, std::string side,
+                                   int cancelledQuantity, std::chrono::system_clock::time_point ts);
+        bool cancelled() const;
+        int cancelledQuantity() const;
 
         /**
          * @brief Gets the timestamp of the status update.

@@ -20,28 +20,37 @@ wait_for_kafka() {
 
 create_topic() {
   local topic="$1"
-  echo "Creating topic: $topic"
+  local partitions="$2"
+  echo "Creating topic: $topic ($partitions partitions)"
   kafka-topics \
     --create --if-not-exists \
     --bootstrap-server "$BOOTSTRAP_SERVER" \
     --replication-factor "$REPLICATION_FACTOR" \
-    --partitions "$PARTITIONS" \
+    --partitions "$partitions" \
     --topic "$topic"
 
   local current_partitions
   current_partitions=$(kafka-topics --bootstrap-server "$BOOTSTRAP_SERVER" \
     --describe --topic "$topic" 2>/dev/null | sed -n 's/.*PartitionCount: \([0-9]*\).*/\1/p' | head -1)
-  if [ -n "$current_partitions" ] && [ "$current_partitions" -lt "$PARTITIONS" ]; then
+  if [ -n "$current_partitions" ] && [ "$current_partitions" -lt "$partitions" ]; then
     kafka-topics --bootstrap-server "$BOOTSTRAP_SERVER" \
-      --alter --topic "$topic" --partitions "$PARTITIONS"
+      --alter --topic "$topic" --partitions "$partitions"
+  elif [ -n "$current_partitions" ] && [ "$current_partitions" -gt "$partitions" ]; then
+    # Kafka cannot shrink a topic. Producers use one key per book, so ordering still holds.
+    echo "Note: $topic already has $current_partitions partitions (wanted $partitions)."
   fi
 }
 
 wait_for_kafka
 
 echo "Creating topics..."
-for topic in $TOPICS; do
-  create_topic "$topic"
+for entry in $TOPICS; do
+  topic="${entry%%:*}"
+  partitions="$PARTITIONS"
+  if [ "$entry" != "$topic" ]; then
+    partitions="${entry#*:}"
+  fi
+  create_topic "$topic" "$partitions"
 done
 
 echo -e "\nCurrent topics in Kafka:"
