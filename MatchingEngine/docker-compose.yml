@@ -1,0 +1,15 @@
+services:
+  MatchingEngine:
+    build: .
+    image: matching-engine:latest
+    container_name: MatchingEngine
+    environment:
+      - KAFKA_BROKER=kafka:9092
+    networks:
+      - kafka-net
+    restart: unless-stopped
+networks:
+  kafka-net:
+    external: true
+# Instructions to create the external kafka-net network if it does not exist:
+# docker network create kafka-net

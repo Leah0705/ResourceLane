@@ -1,0 +1,181 @@
+services:
+  auth-service:
+    build:
+      context: ./backend/auth-service
+      dockerfile: Dockerfile
+    image: resourcelane/auth-service:local
+    container_name: auth-service
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    ports:
+      - "8080:8080"
+    networks:
+      - app-net
+      - kafka-net
+      - db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  wallet-service:
+    build:
+      context: ./backend/wallet-service
+      dockerfile: Dockerfile
+    image: resourcelane/wallet-service:local
+    container_name: wallet-service
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      INTERNAL_SECRET_TOKEN: ${INTERNAL_SECRET_TOKEN:?Set INTERNAL_SECRET_TOKEN in .env}
+    ports:
+      - "8081:8081"
+    networks:
+      - app-net
+      - kafka-net
+      - db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  trade-service:
+    build:
+      context: ./backend/trade-service
+      dockerfile: Dockerfile
+    image: resourcelane/trade-service:local
+    container_name: trade-service
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      INTERNAL_SECRET_TOKEN: ${INTERNAL_SECRET_TOKEN:?Set INTERNAL_SECRET_TOKEN in .env}
+    ports:
+      - "8082:8082"
+    networks:
+      - app-net
+      - kafka-net
+      - db-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: resourcelane/frontend:local
+    container_name: frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - auth-service
+      - wallet-service
+      - trade-service
+    networks:
+      - app-net
+      - kafka-net
+      - db-net
+
+  matching-engine:
+    build:
+      context: ./MatchingEngine
+      dockerfile: Dockerfile
+    image: resourcelane/matching-engine:local
+    container_name: matching-engine
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - MATCHER_STATE_FILE=/var/lib/resourcelane/state.json
+    volumes:
+      - matcher-state:/var/lib/resourcelane
+    networks:
+      - kafka-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:15
+    container_name: postgres-db
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: resourcelane
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - db-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zookeeper:
+    container_name: zookeeper
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zk-data:/var/lib/zookeeper/data
+      - zk-log:/var/lib/zookeeper/log
+    networks:
+      - kafka-net
+
+  kafka:
+    container_name: kafka
+    image: confluentinc/cp-kafka:7.6.0
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    volumes:
+      - ./kafka/script.sh:/script.sh
+      - ./kafka/kafka.env:/kafka.env
+      - kafka-data:/var/lib/kafka/data
+    command: >
+      bash -c "
+      /etc/confluent/docker/run &
+      broker_pid=$$!;
+      bash /script.sh &
+      wait $$broker_pid
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/resourcelane-topics-ready && kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kafka-net
+
+networks:
+  app-net:
+    name: app-net
+    driver: bridge
+  kafka-net:
+    name: kafka-net
+    driver: bridge
+  db-net:
+    name: db-net
+    driver: bridge
+
+volumes:
+  pgdata:
+  matcher-state:
+  zk-data:
+  zk-log:
+  kafka-data:

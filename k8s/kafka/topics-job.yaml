@@ -1,0 +1,26 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics
+  namespace: resource-lane
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-topics
+          image: confluentinc/cp-kafka:7.6.0
+          imagePullPolicy: Never
+          command:
+            - bash
+            - -ec
+            - |
+              until kafka-topics --bootstrap-server kafka:9092 --list >/dev/null 2>&1; do
+                sleep 3
+              done
+              for topic in order ltp trade orderbook status; do
+                kafka-topics --bootstrap-server kafka:9092 \
+                  --create --if-not-exists --replication-factor 1 \
+                  --partitions 3 --topic "$topic"
+              done

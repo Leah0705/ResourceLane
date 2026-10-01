@@ -1,0 +1,38 @@
+version: "3.8"
+services:
+  auth-service:
+    build: ./auth-service
+    ports:
+      - "8080:8080"
+    networks:
+      - kafka-net
+      - db-net
+    depends_on:
+      - postgres-db
+
+  wallet-service:
+    build: ./wallet-service
+    ports:
+      - "8081:8081"
+    networks:
+      - kafka-net
+      - db-net
+    depends_on:
+      - postgres-db
+
+  trade-service:
+    build: ./trade-service
+    ports:
+      - "8082:8082"
+    networks:
+      - kafka-net
+      - db-net
+    depends_on:
+      - kafka
+      - postgres-db
+
+networks:
+  kafka-net:
+    external: true
+  db-net:
+    external: true

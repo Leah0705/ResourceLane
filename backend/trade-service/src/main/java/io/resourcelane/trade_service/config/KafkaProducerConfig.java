@@ -1,0 +1,54 @@
+package io.resourcelane.trade_service.config;
+
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringSerializer;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * Configuration for Kafka Producer.
+ * Sets up the producer factory and Kafka template.
+ */
+@Configuration
+public class KafkaProducerConfig {
+
+    /** The Kafka bootstrap servers connection string. */
+    // TODO: Update the Kafka broker address as needed.
+    // Uncomment the line below to use a different broker address.
+    // @Value("${KAFKA_BROKER:127.0.0.1:29092}")
+    @Value("${KAFKA_BROKER:kafka:9092}")
+    private String bootstrapServers;
+
+    /**
+     * Creates the ProducerFactory.
+     *
+     * @return The configured ProducerFactory.
+     */
+    @Bean
+    public ProducerFactory<String, String> producerFactory() {
+        Map<String, Object> configProps = new HashMap<>();
+        configProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        configProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        configProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        configProps.put(ProducerConfig.ACKS_CONFIG, "all");
+        configProps.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
+        return new DefaultKafkaProducerFactory<>(configProps);
+    }
+
+    /**
+     * Creates the KafkaTemplate.
+     *
+     * @return The configured KafkaTemplate.
+     */
+    @Bean
+    public KafkaTemplate<String, String> kafkaTemplate() {
+        return new KafkaTemplate<>(producerFactory());
+    }
+}

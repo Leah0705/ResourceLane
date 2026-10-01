@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: resource-lane
+data:
+  fluent-bit.yaml: |
+    service:
+      flush: 1
+      log_level: info
+    pipeline:
+      inputs:
+        - name: tail
+          tag: resource-lane.*
+          path: /var/log/containers/*_resource-lane_*.log
+          path_key: filename
+          read_from_head: true
+          multiline.parser: docker,cri
+      outputs:
+        - name: loki
+          match: 'resource-lane.*'
+          host: loki
+          port: 3100
+          labels: job=resource-lane
+          line_format: json
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: resource-lane
+spec:
+  selector:
+    matchLabels:
+      app: fluent-bit
+  template:
+    metadata:
+      labels:
+        app: fluent-bit
+    spec:
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:5.1.2
+          imagePullPolicy: Never
+          args: ["-c", "/fluent-bit/etc/fluent-bit.yaml"]
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/fluent-bit.yaml
+              subPath: fluent-bit.yaml
+              readOnly: true
+            - name: container-logs
+              mountPath: /var/log/containers
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: docker-logs
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: fluent-bit-config
+        - name: container-logs
+          hostPath:
+            path: /var/log/containers
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+        - name: docker-logs
+          hostPath:
+            path: /var/lib/docker/containers

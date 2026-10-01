@@ -1,0 +1,45 @@
+{
+  "configurations": [
+    {
+      "type": "java",
+      "name": "Spring Boot-AuthServiceApplication<auth-service>",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "mainClass": "io.resourcelane.auth_service.AuthServiceApplication",
+      "projectName": "auth-service",
+      "args": "",
+      "envFile": "${workspaceFolder}/.env",
+      "vmArgs": " -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=54538 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dspring.jmx.enabled=true -Djava.rmi.server.hostname=localhost -Dspring.application.admin.enabled=true -Dspring.boot.project.name=auth-service"
+    },
+    {
+      "type": "java",
+      "name": "Spring Boot-TradeServiceApplication<trade-service>",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "mainClass": "io.resourcelane.trade_service.TradeServiceApplication",
+      "projectName": "trade-service",
+      "args": "",
+      "envFile": "${workspaceFolder}/.env",
+      "vmArgs": " -Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=59768 -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dspring.jmx.enabled=true -Djava.rmi.server.hostname=localhost -Dspring.application.admin.enabled=true -Dspring.boot.project.name=trade-service"
+    },
+    {
+      "type": "java",
+      "name": "Spring Boot-WalletServiceApplication<wallet-service>",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "mainClass": "io.resourcelane.wallet_service.WalletServiceApplication",
+      "projectName": "wallet-service",
+      "args": "",
+      "envFile": "${workspaceFolder}/.env"
+    },
+
+    {
+      "name": "React: Chrome",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:3000", // Change this to match your dev server port
+      "webRoot": "${workspaceFolder}/src",
+      "sourceMaps": true
+    }
+  ]
+}
